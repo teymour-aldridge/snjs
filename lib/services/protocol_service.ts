@@ -36,7 +36,8 @@ import {
   isNullOrUndefined,
   isFunction,
   removeFromArray,
-  isWebCryptoAvailable
+  isWebCryptoAvailable,
+  extendArray
 } from '@Lib/utils';
 
 import { V001Algorithm, V002Algorithm } from '../protocol/operator/algorithms';
@@ -628,18 +629,43 @@ export class SNProtocolService extends PureService implements EncryptionDelegate
         PayloadSource.FileImport,
       );
     });
-    let decryptedPayloads;
+    const decryptedPayloads: PurePayload[] = [];
     if (keyParams) {
       const key = await this.computeRootKey(
         password!,
         keyParams
       );
-      decryptedPayloads = await this.payloadsByDecryptingPayloads(
-        encryptedPayloads,
+      const itemsKeysPayloads = encryptedPayloads.filter((payload) => {
+        return payload.content_type === ContentType.ItemsKey
+      });
+      /** First decrypt items keys, in case we need to reference these keys for the
+       * decryption of other items below */
+      const decryptedItemsKeysPayloads = await this.payloadsByDecryptingPayloads(
+        itemsKeysPayloads,
         key
       );
+      extendArray(decryptedPayloads, decryptedItemsKeysPayloads);
+      for (const encryptedPayload of encryptedPayloads) {
+        if (encryptedPayload.content_type === ContentType.ItemsKey) {
+          continue;
+        }
+        let itemsKey = await this.keyToUseForDecryptionOfPayload(encryptedPayload);
+        if (!itemsKey) {
+          const candidate = decryptedItemsKeysPayloads.find((payload) => {
+            return encryptedPayload.items_key_id === payload.uuid;
+          });
+          if (candidate) {
+            itemsKey = CreateItemFromPayload(candidate) as SNItemsKey;
+          }
+        }
+        const decryptedPayload = await this.payloadByDecryptingPayload(
+          encryptedPayload,
+          itemsKey
+        );
+        decryptedPayloads.push(decryptedPayload);
+      }
     } else {
-      decryptedPayloads = encryptedPayloads;
+      extendArray(decryptedPayloads, encryptedPayloads);
     }
     return decryptedPayloads;
   }
